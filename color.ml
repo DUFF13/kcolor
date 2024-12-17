@@ -41,141 +41,86 @@ let sommet_saturation_max (g : graphe) (c : coloration) (dsat : int array) : int
   ) g;
   !max_sommet
 
-(* Met à jour les valeurs DSAT après avoir colorié un sommet *)
-let update_dsat (g : graphe) (c : coloration) (dsat : int array) (voisins_colores : bool array array)
-                (sommet : int) (couleur : int) : unit =
-  List.iter (fun voisin ->
-    if c.(voisin) = -1 then (* Si le voisin n'est pas encore colorié *)
-      if not voisins_colores.(voisin).(couleur) then begin
-        voisins_colores.(voisin).(couleur) <- true;
-        dsat.(voisin) <- dsat.(voisin) + 1;
-      end
-    ) g.(sommet)
 
 
-
-(* Fonction principale pour DSATUR avec Branch and Bound *)
-let dsatur_branch_and_bound_optimized (g : graphe) : int =
-  let start_time = Unix.gettimeofday () in (* Démarre le chronomètre *)
-
-  let n = Array.length g in
-  let c = Array.make n (-1) in (* Tableau des couleurs, -1 pour non colorié *)
-  let dsat = Array.make n 0 in (* Tableau des saturations *)
-  let voisins_colores = Array.init n (fun _ -> Array.make n false) in (* Tableau des voisins colorés *)
-  let chi = ref n in (* Nombre chromatique initial *)
-  let sommets_colories = ref 0 in (* Compteur des sommets coloriés *)
-
-  (* Fonction récursive pour effectuer le backtracking *)
-  let rec dsatur_recursive (k : int) =
-    if !sommets_colories = n then ( (* Tous les sommets sont coloriés *)
-      chi := min !chi k; (* Met à jour le nombre chromatique minimal trouvé *)
-    ) else (
-      let s = sommet_saturation_max_mem g c dsat in
-      (* Vérifie si un sommet valide a été trouvé *)
-      if s <> -1 then (
-        for couleur = 0 to k do
-          if couleur < !chi then (
-            (* Vérifie si la couleur est valide pour ce sommet *)
-            let couleur_possible =
-              List.for_all (fun voisin -> c.(voisin) <> couleur) g.(s)
-            in
-            if couleur_possible then (
-              c.(s) <- couleur;
-              incr sommets_colories; (* Incrémente le compteur de sommets coloriés *)
-
-              (* Met à jour les saturations dynamiquement *)
-              update_dsat g c dsat voisins_colores s couleur;
-
-              (* Appel récursif *)
-              dsatur_recursive (max k couleur);
-
-              (* Backtracking : défaire les changements *)
-              c.(s) <- -1;
-              decr sommets_colories; (* Décrémente le compteur de sommets coloriés *)
-
-              List.iter (fun voisin ->
-                if voisin >= 0 && voisin < n then (
-                  voisins_colores.(voisin).(couleur) <- false;
-                  dsat.(voisin) <- dsat.(voisin) - 1
-                )
-              ) g.(s)
-            )
-          )
-        done
-      )
-    )
-  in
-
-  (* Appel initial à la fonction récursive *)
-  dsatur_recursive 0;
-
-  (* Mesure du temps d'exécution *)
-  let end_time = Unix.gettimeofday () in
-  let execution_time = end_time -. start_time in
-  Printf.printf "Temps d'exécution : %.6f secondes\n" execution_time;
-
-  (* Retourne le nombre chromatique optimal *)
-  !chi
-
-let update_dsat (g : graphe) (c : coloration) (dsat : int array) (voisins_colores : int list array)
-                (sommet : int) (couleur : int) : unit =
+let update_dsat (g : graphe) (c : coloration) (dsat : int array)
+                (voisins_colores : int list array) (sommet : int) (couleur : int) : (int * int) list =
+  (* Met à jour les DSAT et voisins_colores, en mémorisant les modifications *)
+  let modifications = ref [] in
   List.iter (fun voisin ->
     if c.(voisin) = -1 then begin
-      (* Si le voisin n'est pas encore colorié et la couleur n'est pas dans ses voisins colorés *)
+      (* Si la couleur n'est pas déjà dans les voisins colorés *)
       if not (List.mem couleur voisins_colores.(voisin)) then begin
         voisins_colores.(voisin) <- couleur :: voisins_colores.(voisin);
+        modifications := (voisin, dsat.(voisin)) :: !modifications;
         dsat.(voisin) <- dsat.(voisin) + 1;
       end
     end
-  ) g.(sommet)
+  ) g.(sommet);
+  !modifications
+
+let revert_dsat (dsat : int array) (voisins_colores : int list array)
+                (modifications : (int * int) list) (sommet : int) (couleur : int) =
+  List.iter (fun (voisin, old_dsat) ->
+    dsat.(voisin) <- old_dsat;
+    voisins_colores.(voisin) <- List.filter ((<>) couleur) voisins_colores.(voisin)
+  ) modifications
+
 
 let dsatur_branch_and_bound (g : graphe) : int =
   let start_time = Unix.gettimeofday () in
 
   let n = Array.length g in
-  let c = Array.make n (-1) in
-  let dsat = Array.make n 0 in
-  let voisins_colores = Array.make n [] in
-  let chi = ref n in
-  let sommets_colories = ref 0 in
+  let c = Array.make n (-1) in             (* Tableau des couleurs assignées *)
+  let dsat = Array.make n 0 in            (* Tableau des degrés de saturation *)
+  let voisins_colores = Array.make n [] in (* Liste des couleurs des voisins pour chaque sommet *)
+  let chi = ref n in                      (* Borne supérieure pour le nombre de couleurs *)
+  let sommets_colories = ref 0 in         (* Compteur de sommets coloriés *)
 
-  (* Fonction récursive pour le backtracking *)
+  (* Fonction récursive de backtracking avec pruning *)
   let rec branch_and_bound (k : int) =
-    if !sommets_colories = n then
-      chi := min !chi k
-    else
+    if k >= !chi then () (* Pruning : on ne continue pas si k dépasse chi *)
+    else if !sommets_colories = n then
+      chi := min !chi k (* Mise à jour de la borne supérieure *)
+    else begin
       let s = sommet_saturation_max g c dsat in
-      if s <> -1 then
+      if s <> -1 then begin
+        (* Créer la liste des couleurs interdites pour ce sommet *)
+        let couleurs_interdites = List.fold_left (fun acc voisin ->
+          if c.(voisin) <> -1 then c.(voisin) :: acc else acc
+        ) [] g.(s) in
+
+        (* Essayer toutes les couleurs admissibles *)
         for couleur = 0 to k do
-          if couleur < !chi && not (List.mem couleur voisins_colores.(s)) then begin
+          if not (List.mem couleur couleurs_interdites) then begin
+            (* Assigner la couleur au sommet s *)
             c.(s) <- couleur;
             incr sommets_colories;
 
-            (* Met à jour les DSAT et les couleurs des voisins *)
-            update_dsat g c dsat voisins_colores s couleur;
+            (* Mise à jour et mémorisation des modifications *)
+            let modifications = update_dsat g c dsat voisins_colores s couleur in
 
-            (* Appel récursif *)
+            (* Appel récursif avec la nouvelle valeur de k *)
             branch_and_bound (max k (couleur + 1));
 
-            (* Backtracking *)
+            (* Backtracking : annuler l'affectation et les modifications *)
+            revert_dsat dsat voisins_colores modifications s couleur;
             c.(s) <- -1;
             decr sommets_colories;
-
-            (* Retire la couleur des voisins *)
-            List.iter (fun voisin ->
-              if c.(voisin) = -1 then
-                voisins_colores.(voisin) <- List.filter ((<>) couleur) voisins_colores.(voisin)
-            ) g.(s)
           end
-        done
+        done;
+      end
+    end
   in
 
   (* Lancement de la recherche *)
   branch_and_bound 0;
 
+  (* Temps d'exécution *)
   let end_time = Unix.gettimeofday () in
   Printf.printf "Temps d'exécution : %.6f secondes\n" (end_time -. start_time);
   !chi
+
 
 let lire_graphe (filename : string) : graphe =
   let x = open_in filename in
@@ -291,9 +236,7 @@ let test_graphes () =
 (* Appel des tests *)
 test_graphes ();;
 
-let graphe = lire_graphe "test/test.col"
+let graphe = lire_graphe "test/test3.col"
 let grapheNO = desorienter_graphe graphe;;
 
 dsatur_branch_and_bound grapheNO;;
-
-let graphe2 = lire_graphe "test/test_simp
