@@ -148,7 +148,7 @@ let lire_graphe (filename : string) : graphe =
     (* Construire le graphe *)
     let g = Array.make !n [] in
     List.iter (fun (u, v) ->
-      g.(u) <- v :: g.(u) (* Ajouter l’arête u -> v *)
+        g.(u) <- v :: g.(u); (* Ajouter l’arête u -> v *)
     ) !edges;
     g
 ;;
@@ -166,6 +166,121 @@ let desorienter_graphe (g : graphe) : graphe =
   done;
   g_non_oriente;;
 
+
+
+let initialiser_voisins_colores (n : int) : int array array =
+  Array.make_matrix n n 0 (* Matrice n x n initialisée à 0 *)
+;;
+
+let initialiser_dsat (n : int) : int array =
+  Array.make n 0 (* Tableau 1D initialisé à 0 *)
+;;
+
+let mettre_a_jour_voisins_et_dsat (g : graphe) (c : coloration)
+                                  (voisins_colores : int array array)
+                                  (dsat : int array) (s : int) (couleur : int) : unit =
+  List.iter (fun voisin ->
+    if c.(voisin) = -1 then begin
+      (* Mise à jour du tableau voisins_colores *)
+      if voisins_colores.(voisin).(couleur) = 0 then
+        dsat.(voisin) <- dsat.(voisin) + 1; (* Nouvelle couleur rencontrée *)
+      voisins_colores.(voisin).(couleur) <- voisins_colores.(voisin).(couleur) + 1;
+    end
+  ) g.(s)
+;;
+
+let retirer_voisins_et_dsat (g : graphe) (c : coloration)
+                            (voisins_colores : int array array)
+                            (dsat : int array) (s : int) (couleur : int) : unit =
+  List.iter (fun voisin ->
+    if c.(voisin) = -1 then begin
+      (* Mise à jour du tableau voisins_colores *)
+      voisins_colores.(voisin).(couleur) <- voisins_colores.(voisin).(couleur) - 1;
+      if voisins_colores.(voisin).(couleur) = 0 then
+        dsat.(voisin) <- dsat.(voisin) - 1; (* Couleur retirée complètement *)
+    end
+  ) g.(s)
+;;
+
+let find_first_available_color (voisins_colores : int array array) (s : int) : int =
+  (* Parcourt les couleurs dans voisins_colores.(s) pour trouver la première disponible *)
+  let n = Array.length voisins_colores.(s) in
+  let couleur = ref 0 in
+  while !couleur < n && voisins_colores.(s).(!couleur) > 0 do
+    incr couleur
+  done;
+  !couleur
+;;
+
+let colorier_sommet (g : graphe) (c : coloration) (voisins_colores : int array array)
+                    (dsat : int array) (s : int) : unit =
+  let couleur = find_first_available_color voisins_colores s in
+  c.(s) <- couleur; (* Assigner la couleur au sommet s *)
+  mettre_a_jour_voisins_et_dsat g c voisins_colores dsat s couleur (* Mise à jour dynamique *)
+;;
+
+
+let retirer_couleur_sommet (g : graphe) (c : coloration) (voisins_colores : int array array)
+                           (dsat : int array) (s : int) : unit =
+  let couleur = c.(s) in
+  if couleur <> -1 then begin
+    c.(s) <- -1;
+    retirer_voisins_et_dsat g c voisins_colores dsat s couleur;
+  end
+;;
+
+let sommet_saturation_max (g : graphe) (c : coloration) (dsat : int array) : int =
+  let max_sommet = ref (-1) in
+  let max_dsat = ref (-1) in
+  let max_degre = ref (-1) in
+  Array.iteri (fun i voisins ->
+    if c.(i) = -1 then
+      let dsat_i = dsat.(i) in
+      let degre_i = List.length g.(i) in
+      if dsat_i > !max_dsat || (dsat_i = !max_dsat && degre_i > !max_degre) then begin
+        max_sommet := i;
+        max_dsat := dsat_i;
+        max_degre := degre_i;
+      end
+  ) g;
+  !max_sommet
+;;
+
+let dsatur_branch_and_bound (g : graphe) : int =
+  let start_time = Unix.gettimeofday () in
+
+  let n = Array.length g in
+  let c = Array.make n (-1) in
+  let voisins_colores = initialiser_voisins_colores n in
+  let dsat = initialiser_dsat n in
+  let chi = ref n in
+  let sommets_colories = ref 0 in
+
+  let rec branch_and_bound (k : int) =
+    if k >= !chi then ()
+    else if !sommets_colories = n then
+      chi := min !chi k
+    else begin
+      let s = sommet_saturation_max g c dsat in
+      if s <> -1 then begin
+        for couleur = 0 to k do
+          if voisins_colores.(s).(couleur) = 0 then begin
+            colorier_sommet g c voisins_colores dsat s;
+            incr sommets_colories;
+            branch_and_bound (max k (couleur + 1));
+            retirer_couleur_sommet g c voisins_colores dsat s;
+            decr sommets_colories;
+          end
+        done;
+      end
+    end
+  in
+
+  branch_and_bound 0;
+  let end_time = Unix.gettimeofday () in
+  Printf.printf "Temps d'exécution : %.6f secondes\n" (end_time -. start_time);
+  !chi
+;;
 
 
 (* TEST *)
@@ -217,7 +332,7 @@ let graphe_arbre_binaire = [|
   [1];       (* 4 *)
   [2];       (* 5 *)
   [2]        (* 6 *)
-  |]
+  |];;
 
 let test_graphes () =
   let tester_graphe nom graphe =
@@ -236,7 +351,9 @@ let test_graphes () =
 (* Appel des tests *)
 test_graphes ();;
 
-let graphe = lire_graphe "test/test3.col"
+let graphe = lire_graphe "test/myciel4.col"
 let grapheNO = desorienter_graphe graphe;;
 
 dsatur_branch_and_bound grapheNO;;
+
+(* Intégration du module Tas dans le code existant *)
